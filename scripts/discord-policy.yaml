@@ -1,10 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
-preset:
-  name: discord
-  description: "Discord API, gateway, and CDN access"
-
+version: 1
 network_policies:
   discord:
     name: discord
@@ -32,5 +26,3 @@ network_policies:
         tls: terminate
         rules:
           - allow: { method: GET, path: "/**" }
-    binaries:
-      - path: /usr/local/bin/openclaw

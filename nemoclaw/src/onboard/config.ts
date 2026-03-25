@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { deleteFileIfExists, readJsonFile, writeJsonFile } from "../util/json-file.js";
 
 const CONFIG_DIR = join(process.env.HOME ?? "/tmp", ".nemoclaw");
 
@@ -51,37 +51,18 @@ export function describeOnboardProvider(config: NemoClawOnboardConfig): string {
   }
 }
 
-let configDirCreated = false;
-
-function ensureConfigDir(): void {
-  if (configDirCreated) return;
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
-  }
-  configDirCreated = true;
-}
-
 function configPath(): string {
   return join(CONFIG_DIR, "config.json");
 }
 
 export function loadOnboardConfig(): NemoClawOnboardConfig | null {
-  ensureConfigDir();
-  const path = configPath();
-  if (!existsSync(path)) {
-    return null;
-  }
-  return JSON.parse(readFileSync(path, "utf-8")) as NemoClawOnboardConfig;
+  return readJsonFile(configPath()) as NemoClawOnboardConfig | null;
 }
 
 export function saveOnboardConfig(config: NemoClawOnboardConfig): void {
-  ensureConfigDir();
-  writeFileSync(configPath(), JSON.stringify(config, null, 2));
+  writeJsonFile(configPath(), config);
 }
 
 export function clearOnboardConfig(): void {
-  const path = configPath();
-  if (existsSync(path)) {
-    unlinkSync(path);
-  }
+  deleteFileIfExists(configPath());
 }

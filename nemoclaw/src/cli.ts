@@ -17,6 +17,24 @@ import { cliEject } from "./commands/eject.js";
 import { cliLogs } from "./commands/logs.js";
 import { cliOnboard } from "./commands/onboard.js";
 
+const DEFAULT_BLUEPRINT_PROFILE = "default";
+const DEFAULT_LOG_LINES = 50;
+
+function addProfileOption<
+  T extends { option: (flags: string, description?: string, defaultValue?: string) => T },
+>(command: T): T {
+  return command.option(
+    "--profile <profile>",
+    "Blueprint profile to use",
+    DEFAULT_BLUEPRINT_PROFILE,
+  );
+}
+
+function parseLinesOption(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LOG_LINES;
+}
+
 export function registerCliCommands(ctx: PluginCliContext, api: OpenClawPluginApi): void {
   const { program, logger } = ctx;
   const pluginConfig = getPluginConfig(api);
@@ -33,36 +51,36 @@ export function registerCliCommands(ctx: PluginCliContext, api: OpenClawPluginAp
     });
 
   // openclaw nemoclaw migrate
-  nemoclaw
-    .command("migrate")
-    .description("Migrate host OpenClaw installation into an OpenShell sandbox")
-    .option("--dry-run", "Show what would be migrated without making changes", false)
-    .option("--profile <profile>", "Blueprint profile to use", "default")
-    .option("--skip-backup", "Skip creating a host backup snapshot", false)
-    .action(async (opts: { dryRun: boolean; profile: string; skipBackup: boolean }) => {
-      await cliMigrate({
-        dryRun: opts.dryRun,
-        profile: opts.profile,
-        skipBackup: opts.skipBackup,
-        logger,
-        pluginConfig,
-      });
+  addProfileOption(
+    nemoclaw
+      .command("migrate")
+      .description("Migrate host OpenClaw installation into an OpenShell sandbox")
+      .option("--dry-run", "Show what would be migrated without making changes", false)
+      .option("--skip-backup", "Skip creating a host backup snapshot", false),
+  ).action(async (opts: { dryRun: boolean; profile: string; skipBackup: boolean }) => {
+    await cliMigrate({
+      dryRun: opts.dryRun,
+      profile: opts.profile,
+      skipBackup: opts.skipBackup,
+      logger,
+      pluginConfig,
     });
+  });
 
   // openclaw nemoclaw launch
-  nemoclaw
-    .command("launch")
-    .description("Fresh setup: bootstrap OpenClaw inside OpenShell")
-    .option("--force", "Skip ergonomics warning and force plugin-driven bootstrap", false)
-    .option("--profile <profile>", "Blueprint profile to use", "default")
-    .action(async (opts: { force: boolean; profile: string }) => {
-      await cliLaunch({
-        force: opts.force,
-        profile: opts.profile,
-        logger,
-        pluginConfig,
-      });
+  addProfileOption(
+    nemoclaw
+      .command("launch")
+      .description("Fresh setup: bootstrap OpenClaw inside OpenShell")
+      .option("--force", "Skip ergonomics warning and force plugin-driven bootstrap", false),
+  ).action(async (opts: { force: boolean; profile: string }) => {
+    await cliLaunch({
+      force: opts.force,
+      profile: opts.profile,
+      logger,
+      pluginConfig,
     });
+  });
 
   // openclaw nemoclaw connect
   nemoclaw
@@ -83,7 +101,7 @@ export function registerCliCommands(ctx: PluginCliContext, api: OpenClawPluginAp
     .action(async (opts: { follow: boolean; lines: string; runId?: string }) => {
       await cliLogs({
         follow: opts.follow,
-        lines: parseInt(opts.lines, 10),
+        lines: parseLinesOption(opts.lines),
         runId: opts.runId,
         logger,
         pluginConfig,
@@ -110,7 +128,10 @@ export function registerCliCommands(ctx: PluginCliContext, api: OpenClawPluginAp
     .command("onboard")
     .description("Interactive setup: configure inference endpoint, credential, and model")
     .option("--api-key <key>", "API key for endpoints that require one (skips prompt)")
-    .option("--endpoint <type>", "Endpoint type: build, ncp, ollama, nim-local, vllm, custom (nim-local and vllm are experimental)")
+    .option(
+      "--endpoint <type>",
+      "Endpoint type: build, ncp, ollama, nim-local, vllm, custom (nim-local and vllm are experimental)",
+    )
     .option("--ncp-partner <name>", "NCP partner name (when endpoint is ncp)")
     .option("--endpoint-url <url>", "Endpoint URL (for ncp, nim-local, ollama, or custom)")
     .option("--model <model>", "Model ID to use")

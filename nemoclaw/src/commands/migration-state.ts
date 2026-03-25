@@ -11,13 +11,13 @@ import {
   readFileSync,
   renameSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { create as createTar } from "tar";
 import JSON5 from "json5";
 import type { PluginLogger } from "../index.js";
+import { readJsonFile, writeJsonFile } from "../util/json-file.js";
 
 const SANDBOX_MIGRATION_DIR = "/sandbox/.nemoclaw/migration";
 const SNAPSHOT_VERSION = 2;
@@ -87,6 +87,12 @@ type CandidateRoot = {
 
 type OpenClawConfigDocument = Record<string, unknown>;
 
+type DirectoryInspection = {
+  exists: boolean;
+  isDirectory: boolean;
+  symlinkPaths: string[];
+};
+
 function resolveHostHome(env: NodeJS.ProcessEnv = process.env): string {
   const fallbackHome = env.HOME?.trim() || env.USERPROFILE?.trim() || os.homedir();
   const explicitHome = env.OPENCLAW_HOME?.trim();
@@ -152,27 +158,74 @@ function loadConfigDocument(configPath: string): OpenClawConfigDocument | null {
   return parsed as OpenClawConfigDocument;
 }
 
-function collectSymlinkPaths(rootPath: string): string[] {
-  const symlinks: string[] = [];
+function inspectDirectory(
+  rootPath: string,
+  cache?: Map<string, DirectoryInspection>,
+): DirectoryInspection {
+  const normalizedPath = normalizeHostPath(rootPath);
+  const cached = cache?.get(normalizedPath);
+  if (cached) {
+    return cached;
+  }
 
-  function walk(currentPath: string, relativePath: string): void {
-    const stat = lstatSync(currentPath);
+  const missing: DirectoryInspection = {
+    exists: false,
+    isDirectory: false,
+    symlinkPaths: [],
+  };
+
+  if (!existsSync(rootPath)) {
+    cache?.set(normalizedPath, missing);
+    return missing;
+  }
+
+  const rootStat = lstatSync(rootPath);
+  if (!rootStat.isDirectory()) {
+    const fileResult: DirectoryInspection = {
+      exists: true,
+      isDirectory: false,
+      symlinkPaths: [],
+    };
+    cache?.set(normalizedPath, fileResult);
+    return fileResult;
+  }
+
+  const symlinkPaths: string[] = [];
+  const pending: Array<{ currentPath: string; relativePath: string }> = [
+    { currentPath: rootPath, relativePath: "" },
+  ];
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) {
+      continue;
+    }
+
+    const stat = current.relativePath ? lstatSync(current.currentPath) : rootStat;
     if (stat.isSymbolicLink()) {
-      symlinks.push(relativePath || ".");
-      return;
+      symlinkPaths.push(current.relativePath || ".");
+      continue;
     }
     if (!stat.isDirectory()) {
-      return;
+      continue;
     }
-    for (const entry of readdirSync(currentPath)) {
-      const nextPath = path.join(currentPath, entry);
-      const nextRelative = relativePath ? path.join(relativePath, entry) : entry;
-      walk(nextPath, nextRelative);
+
+    for (const entry of readdirSync(current.currentPath)) {
+      const nextRelative = current.relativePath ? path.join(current.relativePath, entry) : entry;
+      pending.push({
+        currentPath: path.join(current.currentPath, entry),
+        relativePath: nextRelative,
+      });
     }
   }
 
-  walk(rootPath, "");
-  return symlinks.sort();
+  const inspected: DirectoryInspection = {
+    exists: true,
+    isDirectory: true,
+    symlinkPaths: symlinkPaths.sort(),
+  };
+  cache?.set(normalizedPath, inspected);
+  return inspected;
 }
 
 function slugify(input: string): string {
@@ -223,6 +276,7 @@ function defaultWorkspacePath(env: NodeJS.ProcessEnv = process.env): string {
 function collectExternalRoots(
   config: OpenClawConfigDocument | null,
   stateDir: string,
+  inspectionCache?: Map<string, DirectoryInspection>,
 ): { roots: MigrationExternalRoot[]; warnings: string[]; errors: string[] } {
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -315,35 +369,25 @@ function collectExternalRoots(
     });
   }
 
-  const roots = [...rootMap.values()]
-    .filter((root) => !isWithinRoot(root.sourcePath, stateDir))
-    .map<MigrationExternalRoot>((root) => ({
-      id: root.id,
-      kind: root.kind,
-      label: root.label,
-      sourcePath: root.sourcePath,
-      snapshotRelativePath: path.join("external", root.id),
-      sandboxPath: root.sandboxPath,
-      symlinkPaths: [],
-      bindings: root.bindings,
-    }));
+  const roots = [...rootMap.values()].filter((root) => !isWithinRoot(root.sourcePath, stateDir));
 
   const validRoots: MigrationExternalRoot[] = [];
   for (const root of roots) {
-    if (!existsSync(root.sourcePath)) {
+    const inspection = inspectDirectory(root.sourcePath, inspectionCache);
+    if (!inspection.exists) {
       const message = `${root.kind} path is missing: ${root.sourcePath} (${root.bindings
         .map((binding) => binding.configPath)
         .join(", ")})`;
-      if (rootMap.get(normalizeHostPath(root.sourcePath))?.required) {
+      if (root.required) {
         errors.push(`Configured ${message}`);
       } else {
         warnings.push(`Skipping absent optional ${message}`);
       }
       continue;
     }
+
     try {
-      const stat = lstatSync(root.sourcePath);
-      if (!stat.isDirectory()) {
+      if (!inspection.isDirectory) {
         errors.push(
           `${root.kind} path is not a directory: ${root.sourcePath} (${root.bindings
             .map((binding) => binding.configPath)
@@ -351,13 +395,21 @@ function collectExternalRoots(
         );
         continue;
       }
-      root.symlinkPaths = collectSymlinkPaths(root.sourcePath);
-      if (root.symlinkPaths.length > 0) {
+      if (inspection.symlinkPaths.length > 0) {
         warnings.push(
-          `Preserving ${String(root.symlinkPaths.length)} symlink(s) under ${root.sourcePath} during migration.`,
+          `Preserving ${String(inspection.symlinkPaths.length)} symlink(s) under ${root.sourcePath} during migration.`,
         );
       }
-      validRoots.push(root);
+      validRoots.push({
+        id: root.id,
+        kind: root.kind,
+        label: root.label,
+        sourcePath: root.sourcePath,
+        snapshotRelativePath: path.join("external", root.id),
+        sandboxPath: root.sandboxPath,
+        symlinkPaths: inspection.symlinkPaths,
+        bindings: root.bindings,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`Failed to inspect ${root.sourcePath}: ${msg}`);
@@ -371,6 +423,7 @@ export function detectHostOpenClaw(env: NodeJS.ProcessEnv = process.env): HostOp
   const homeDir = resolveHostHome(env);
   const stateDir = resolveStateDir(env);
   const configPath = resolveConfigPath(stateDir, env);
+  const inspectionCache = new Map<string, DirectoryInspection>();
   const stateExists = existsSync(stateDir);
   const configExists = existsSync(configPath);
 
@@ -407,7 +460,7 @@ export function detectHostOpenClaw(env: NodeJS.ProcessEnv = process.env): HostOp
     errors.push(`Failed to parse OpenClaw config at ${configPath}: ${msg}`);
   }
 
-  const rootInfo = collectExternalRoots(config, stateDir);
+  const rootInfo = collectExternalRoots(config, stateDir, inspectionCache);
   warnings.push(...rootInfo.warnings);
   errors.push(...rootInfo.errors);
 
@@ -428,18 +481,20 @@ export function detectHostOpenClaw(env: NodeJS.ProcessEnv = process.env): HostOp
         )
       : defaultWorkspacePath(env);
 
-  const extensionsDir = existsSync(path.join(stateDir, "extensions"))
-    ? path.join(stateDir, "extensions")
-    : null;
-  const skillsDir = existsSync(path.join(stateDir, "skills")) ? path.join(stateDir, "skills") : null;
-  const hooksDir = existsSync(path.join(stateDir, "hooks")) ? path.join(stateDir, "hooks") : null;
+  const extensionsPath = path.join(stateDir, "extensions");
+  const skillsPath = path.join(stateDir, "skills");
+  const hooksPath = path.join(stateDir, "hooks");
+  const workspaceInspection = inspectDirectory(workspaceDir, inspectionCache);
 
-  if (existsSync(workspaceDir)) {
+  const extensionsDir = inspectDirectory(extensionsPath, inspectionCache).isDirectory ? extensionsPath : null;
+  const skillsDir = inspectDirectory(skillsPath, inspectionCache).isDirectory ? skillsPath : null;
+  const hooksDir = inspectDirectory(hooksPath, inspectionCache).isDirectory ? hooksPath : null;
+
+  if (workspaceInspection.isDirectory) {
     try {
-      const symlinkPaths = collectSymlinkPaths(workspaceDir);
-      if (symlinkPaths.length > 0) {
+      if (workspaceInspection.symlinkPaths.length > 0) {
         warnings.push(
-          `Primary workspace contains ${String(symlinkPaths.length)} symlink(s): ${workspaceDir}.`,
+          `Primary workspace contains ${String(workspaceInspection.symlinkPaths.length)} symlink(s): ${workspaceDir}.`,
         );
       }
     } catch (err: unknown) {
@@ -454,7 +509,7 @@ export function detectHostOpenClaw(env: NodeJS.ProcessEnv = process.env): HostOp
     stateDir,
     configDir: stateDir,
     configPath: configExists ? configPath : null,
-    workspaceDir: existsSync(workspaceDir) ? workspaceDir : null,
+    workspaceDir: workspaceInspection.isDirectory ? workspaceDir : null,
     extensionsDir,
     skillsDir,
     hooksDir,
@@ -472,11 +527,15 @@ function copyDirectory(sourcePath: string, destinationPath: string): void {
 }
 
 function writeSnapshotManifest(snapshotDir: string, manifest: SnapshotManifest): void {
-  writeFileSync(path.join(snapshotDir, "snapshot.json"), JSON.stringify(manifest, null, 2));
+  writeJsonFile(path.join(snapshotDir, "snapshot.json"), manifest);
 }
 
 function readSnapshotManifest(snapshotDir: string): SnapshotManifest {
-  return JSON.parse(readFileSync(path.join(snapshotDir, "snapshot.json"), "utf-8")) as SnapshotManifest;
+  const manifest = readJsonFile(path.join(snapshotDir, "snapshot.json"));
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`Snapshot manifest at ${snapshotDir} is invalid.`);
+  }
+  return manifest as SnapshotManifest;
 }
 
 function resolveConfigSourcePath(manifest: SnapshotManifest, snapshotDir: string): string {
@@ -545,7 +604,7 @@ function prepareSandboxState(snapshotDir: string, manifest: SnapshotManifest): s
     }
   }
 
-  writeFileSync(path.join(preparedStateDir, "openclaw.json"), JSON.stringify(config, null, 2));
+  writeJsonFile(path.join(preparedStateDir, "openclaw.json"), config);
   return preparedStateDir;
 }
 
@@ -585,7 +644,7 @@ export function createSnapshotBundle(
       copyDirectory(root.sourcePath, destination);
       externalRoots.push({
         ...root,
-        symlinkPaths: collectSymlinkPaths(root.sourcePath),
+        symlinkPaths: [...root.symlinkPaths],
       });
     }
 

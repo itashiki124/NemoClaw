@@ -1,13 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
-import { promisify } from "node:util";
 import type { PluginLogger, NemoClawConfig } from "../index.js";
 import { loadState } from "../blueprint/state.js";
-
-const execAsync = promisify(exec);
+import { execJsonFile } from "./command-io.js";
 
 /**
  * Detect whether the plugin is running inside an OpenShell sandbox.
@@ -123,15 +120,20 @@ interface SandboxStatusResponse {
   uptime?: string;
 }
 
-async function getSandboxStatus(sandboxName: string, insideSandbox: boolean): Promise<SandboxStatus> {
+async function getSandboxStatus(
+  sandboxName: string,
+  insideSandbox: boolean,
+): Promise<SandboxStatus> {
   if (insideSandbox) {
     return { name: sandboxName, running: false, uptime: null, insideSandbox: true };
   }
   try {
-    const { stdout } = await execAsync(`openshell sandbox status ${sandboxName} --json`, {
-      timeout: 5000,
-    });
-    const parsed = JSON.parse(stdout) as SandboxStatusResponse;
+    const parsed = await execJsonFile<SandboxStatusResponse>("openshell", [
+      "sandbox",
+      "status",
+      sandboxName,
+      "--json",
+    ]);
     return {
       name: sandboxName,
       running: parsed.state === "running",
@@ -162,10 +164,11 @@ async function getInferenceStatus(insideSandbox: boolean): Promise<InferenceStat
     return { configured: false, provider: null, model: null, endpoint: null, insideSandbox: true };
   }
   try {
-    const { stdout } = await execAsync("openshell inference get --json", {
-      timeout: 5000,
-    });
-    const parsed = JSON.parse(stdout) as InferenceStatusResponse;
+    const parsed = await execJsonFile<InferenceStatusResponse>("openshell", [
+      "inference",
+      "get",
+      "--json",
+    ]);
     return {
       configured: true,
       provider: parsed.provider ?? null,

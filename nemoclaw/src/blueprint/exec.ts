@@ -6,6 +6,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginLogger } from "../index.js";
 
+const blueprintRunnerCache = new Map<string, string>();
+
 export type BlueprintAction = "plan" | "apply" | "status" | "rollback";
 
 export interface BlueprintRunOptions {
@@ -31,14 +33,30 @@ function failResult(action: BlueprintAction, message: string): BlueprintRunResul
   return { success: false, runId: "error", action, output: message, exitCode: 1 };
 }
 
+function resolveRunnerPath(blueprintPath: string): string | null {
+  const cachedPath = blueprintRunnerCache.get(blueprintPath);
+  if (cachedPath) {
+    return cachedPath;
+  }
+
+  const runnerPath = join(blueprintPath, "orchestrator", "runner.py");
+  if (!existsSync(runnerPath)) {
+    return null;
+  }
+
+  blueprintRunnerCache.set(blueprintPath, runnerPath);
+  return runnerPath;
+}
+
 export async function execBlueprint(
   options: BlueprintRunOptions,
   logger: PluginLogger,
 ): Promise<BlueprintRunResult> {
-  const runnerPath = join(options.blueprintPath, "orchestrator", "runner.py");
+  const runnerPath = resolveRunnerPath(options.blueprintPath);
 
-  if (!existsSync(runnerPath)) {
-    const msg = `Blueprint runner not found at ${runnerPath}. Is the blueprint installed correctly?`;
+  if (!runnerPath) {
+    const expectedPath = join(options.blueprintPath, "orchestrator", "runner.py");
+    const msg = `Blueprint runner not found at ${expectedPath}. Is the blueprint installed correctly?`;
     logger.error(msg);
     return failResult(options.action, msg);
   }
@@ -62,7 +80,7 @@ export async function execBlueprint(
         NEMOCLAW_BLUEPRINT_PATH: options.blueprintPath,
         NEMOCLAW_ACTION: options.action,
       },
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     proc.stdout.on("data", (data: Buffer) => {

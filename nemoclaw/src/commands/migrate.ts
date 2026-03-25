@@ -4,22 +4,24 @@
 import { execFileSync } from "node:child_process";
 import { join, posix as pathPosix } from "node:path";
 import type { PluginLogger, NemoClawConfig } from "../index.js";
-import { resolveBlueprint } from "../blueprint/resolve.js";
-import { verifyBlueprintDigest } from "../blueprint/verify.js";
-import { execBlueprint } from "../blueprint/exec.js";
 import { loadState, saveState } from "../blueprint/state.js";
+import { runBlueprintDeployment } from "./blueprint-workflow.js";
 import {
   cleanupSnapshotBundle,
   createArchiveFromDirectory,
   createSnapshotBundle,
   detectHostOpenClaw,
-  loadSnapshotManifest,
+  type HostOpenClawState,
   type SnapshotBundle,
 } from "./migration-state.js";
 
 export { detectHostOpenClaw, type HostOpenClawState } from "./migration-state.js";
 
 const SANDBOX_ARCHIVE_DIR = "/sandbox/.nemoclaw/migration/archives";
+
+type ResolvedHostState = HostOpenClawState & {
+  stateDir: string;
+};
 
 export interface MigrateOptions {
   dryRun: boolean;
@@ -43,20 +45,17 @@ export async function cliMigrate(opts: MigrateOptions): Promise<void> {
     return;
   }
 
-  logger.info(`Resolved state dir: ${hostState.stateDir}`);
-  if (hostState.configPath) logger.info(`  Config: ${hostState.configPath}`);
-  if (hostState.workspaceDir) logger.info(`  Workspace: ${hostState.workspaceDir}`);
-  if (hostState.extensionsDir) logger.info(`  Extensions: ${hostState.extensionsDir}`);
-  if (hostState.skillsDir) logger.info(`  Skills: ${hostState.skillsDir}`);
-  if (hostState.hooksDir) logger.info(`  Hooks: ${hostState.hooksDir}`);
-  for (const root of hostState.externalRoots) {
-    logger.info(`  External ${root.kind}: ${root.sourcePath} -> ${root.sandboxPath}`);
-  }
-  for (const warning of hostState.warnings) {
+  const resolvedHostState: ResolvedHostState = {
+    ...hostState,
+    stateDir: hostState.stateDir,
+  };
+
+  logHostStateDetails(logger, resolvedHostState);
+  for (const warning of resolvedHostState.warnings) {
     logger.warn(warning);
   }
-  if (hostState.errors.length > 0) {
-    for (const error of hostState.errors) {
+  if (resolvedHostState.errors.length > 0) {
+    for (const error of resolvedHostState.errors) {
       logger.error(error);
     }
     logger.error("Refusing to migrate until all external OpenClaw roots can be resolved.");
@@ -64,72 +63,28 @@ export async function cliMigrate(opts: MigrateOptions): Promise<void> {
   }
 
   if (dryRun) {
-    logger.info("");
-    logger.info("[Dry run] Would perform the following:");
-    logger.info(`  1. Snapshot state dir: ${hostState.stateDir}`);
-    if (hostState.configPath && hostState.hasExternalConfig) {
-      logger.info(`  2. Capture external config file: ${hostState.configPath}`);
-    }
-    if (hostState.externalRoots.length > 0) {
-      logger.info("  3. Capture external OpenClaw roots and rewrite config paths for the sandbox:");
-      for (const root of hostState.externalRoots) {
-        logger.info(`     - ${root.sourcePath} -> ${root.sandboxPath}`);
-      }
-      logger.info("  4. Package state and external roots as tar archives to preserve symlinks");
-      logger.info("  5. Copy archives into the OpenShell sandbox and verify the migrated paths");
-    } else {
-      logger.info("  3. Package state dir as a tar archive to preserve symlinks");
-      logger.info("  4. Copy the state archive into the OpenShell sandbox and verify the config");
-    }
-    logger.info("  6. Leave the host installation untouched and keep a rollback snapshot");
+    logDryRunPlan(logger, resolvedHostState);
     return;
   }
 
-  logger.info("Resolving blueprint...");
-  const blueprint = await resolveBlueprint(pluginConfig);
-
-  logger.info("Verifying blueprint...");
-  const verification = verifyBlueprintDigest(blueprint.localPath, blueprint.manifest);
-  if (!verification.valid) {
-    logger.error(`Blueprint verification failed: ${verification.errors.join(", ")}`);
-    return;
-  }
-
-  logger.info("Planning migration...");
-  const planResult = await execBlueprint(
-    {
-      blueprintPath: blueprint.localPath,
-      action: "plan",
-      profile,
-      jsonOutput: true,
-    },
+  const deployment = await runBlueprintDeployment({
+    profile,
     logger,
-  );
-
-  if (!planResult.success) {
-    logger.error(`Migration plan failed: ${planResult.output}`);
-    return;
-  }
-
-  logger.info("Provisioning OpenShell sandbox...");
-  const applyResult = await execBlueprint(
-    {
-      blueprintPath: blueprint.localPath,
-      action: "apply",
-      profile,
-      planPath: planResult.runId,
-      jsonOutput: true,
+    pluginConfig,
+    checkCompatibility: false,
+    messages: {
+      verify: "Verifying blueprint...",
+      plan: "Planning migration...",
+      apply: "Provisioning OpenShell sandbox...",
+      failurePrefix: "Migration",
     },
-    logger,
-  );
-
-  if (!applyResult.success) {
-    logger.error(`Migration apply failed: ${applyResult.output}`);
+  });
+  if (!deployment) {
     return;
   }
 
   logger.info("Creating migration snapshot...");
-  const bundle = createSnapshotBundle(hostState, logger, { persist: !skipBackup });
+  const bundle = createSnapshotBundle(resolvedHostState, logger, { persist: !skipBackup });
   if (!bundle) {
     return;
   }
@@ -143,13 +98,13 @@ export async function cliMigrate(opts: MigrateOptions): Promise<void> {
     syncSnapshotBundleIntoSandbox(bundle, pluginConfig.sandboxName);
 
     logger.info("Verifying sandbox migration...");
-    verifySandboxMigration(bundle, pluginConfig.sandboxName);
+    verifySandboxMigration(bundle.manifest, pluginConfig.sandboxName);
 
     saveState({
       ...loadState(),
-      lastRunId: applyResult.runId,
+      lastRunId: deployment.applyResult.runId,
       lastAction: "migrate",
-      blueprintVersion: blueprint.version,
+      blueprintVersion: deployment.blueprint.version,
       sandboxName: pluginConfig.sandboxName,
       migrationSnapshot: skipBackup ? null : bundle.snapshotDir,
       hostBackupPath: skipBackup ? null : bundle.snapshotDir,
@@ -163,21 +118,7 @@ export async function cliMigrate(opts: MigrateOptions): Promise<void> {
     cleanupSnapshotBundle(bundle);
   }
 
-  logger.info("");
-  logger.info("Migration complete. OpenClaw is now running inside OpenShell.");
-  logger.info(`Sandbox: ${pluginConfig.sandboxName}`);
-  logger.info("");
-  logger.info("Next steps:");
-  logger.info("  openclaw nemoclaw connect    # Enter the sandbox");
-  logger.info("  openclaw nemoclaw status     # Verify everything is healthy");
-  logger.info("  openshell term               # Monitor sandbox activity");
-  logger.info("");
-  logger.info("To rollback to your host installation:");
-  if (skipBackup) {
-    logger.info("  Re-run migrate without --skip-backup to keep a rollback snapshot.");
-  } else {
-    logger.info("  openclaw nemoclaw eject");
-  }
+  logMigrationCompletion(logger, pluginConfig.sandboxName, skipBackup);
 }
 
 async function buildMigrationArchives(bundle: SnapshotBundle): Promise<void> {
@@ -218,8 +159,10 @@ function syncArchive(sandboxName: string, archiveName: string, archivePath: stri
   execSandboxCommand(sandboxName, extractCommand);
 }
 
-function verifySandboxMigration(bundle: SnapshotBundle, sandboxName: string): void {
-  const manifest = loadSnapshotManifest(bundle.snapshotDir);
+function verifySandboxMigration(
+  manifest: SnapshotBundle["manifest"],
+  sandboxName: string,
+): void {
   const verification = {
     stateDir: "/sandbox/.openclaw",
     configPath: "/sandbox/.openclaw/openclaw.json",
@@ -293,4 +236,80 @@ function rootArchivePath(bundle: SnapshotBundle, rootId: string): string {
 
 function shellQuote(input: string): string {
   return `'${input.replace(/'/g, `'\\''`)}'`;
+}
+
+function logLines(logger: PluginLogger, lines: string[]): void {
+  for (const line of lines) {
+    logger.info(line);
+  }
+}
+
+function logHostStateDetails(logger: PluginLogger, hostState: ResolvedHostState): void {
+  const lines = [`Resolved state dir: ${hostState.stateDir}`];
+  const optionalPaths = [
+    ["Config", hostState.configPath],
+    ["Workspace", hostState.workspaceDir],
+    ["Extensions", hostState.extensionsDir],
+    ["Skills", hostState.skillsDir],
+    ["Hooks", hostState.hooksDir],
+  ] as const;
+
+  for (const [label, pathValue] of optionalPaths) {
+    if (pathValue) {
+      lines.push(`  ${label}: ${pathValue}`);
+    }
+  }
+
+  for (const root of hostState.externalRoots) {
+    lines.push(`  External ${root.kind}: ${root.sourcePath} -> ${root.sandboxPath}`);
+  }
+
+  logLines(logger, lines);
+}
+
+function logDryRunPlan(logger: PluginLogger, hostState: ResolvedHostState): void {
+  const lines = ["", "[Dry run] Would perform the following:", `  1. Snapshot state dir: ${hostState.stateDir}`];
+
+  if (hostState.configPath && hostState.hasExternalConfig) {
+    lines.push(`  2. Capture external config file: ${hostState.configPath}`);
+  }
+
+  if (hostState.externalRoots.length > 0) {
+    lines.push("  3. Capture external OpenClaw roots and rewrite config paths for the sandbox:");
+    for (const root of hostState.externalRoots) {
+      lines.push(`     - ${root.sourcePath} -> ${root.sandboxPath}`);
+    }
+    lines.push("  4. Package state and external roots as tar archives to preserve symlinks");
+    lines.push("  5. Copy archives into the OpenShell sandbox and verify the migrated paths");
+  } else {
+    lines.push("  3. Package state dir as a tar archive to preserve symlinks");
+    lines.push("  4. Copy the state archive into the OpenShell sandbox and verify the config");
+  }
+
+  lines.push("  6. Leave the host installation untouched and keep a rollback snapshot");
+  logLines(logger, lines);
+}
+
+function logMigrationCompletion(
+  logger: PluginLogger,
+  sandboxName: string,
+  skipBackup: boolean,
+): void {
+  const lines = [
+    "",
+    "Migration complete. OpenClaw is now running inside OpenShell.",
+    `Sandbox: ${sandboxName}`,
+    "",
+    "Next steps:",
+    "  openclaw nemoclaw connect    # Enter the sandbox",
+    "  openclaw nemoclaw status     # Verify everything is healthy",
+    "  openshell term               # Monitor sandbox activity",
+    "",
+    "To rollback to your host installation:",
+    skipBackup
+      ? "  Re-run migrate without --skip-backup to keep a rollback snapshot."
+      : "  openclaw nemoclaw eject",
+  ];
+
+  logLines(logger, lines);
 }

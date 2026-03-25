@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readJsonFile, writeJsonFile } from "../util/json-file.js";
 
 const STATE_DIR = join(process.env.HOME ?? "/tmp", ".nemoclaw", "state");
 
@@ -15,16 +15,6 @@ export interface NemoClawState {
   hostBackupPath: string | null;
   createdAt: string | null;
   updatedAt: string;
-}
-
-let stateDirCreated = false;
-
-function ensureStateDir(): void {
-  if (stateDirCreated) return;
-  if (!existsSync(STATE_DIR)) {
-    mkdirSync(STATE_DIR, { recursive: true });
-  }
-  stateDirCreated = true;
 }
 
 function statePath(): string {
@@ -45,25 +35,15 @@ function blankState(): NemoClawState {
 }
 
 export function loadState(): NemoClawState {
-  ensureStateDir();
-  const path = statePath();
-  if (!existsSync(path)) {
-    return blankState();
-  }
-  return JSON.parse(readFileSync(path, "utf-8")) as NemoClawState;
+  return (readJsonFile(statePath()) as NemoClawState | null) ?? blankState();
 }
 
 export function saveState(state: NemoClawState): void {
-  ensureStateDir();
   state.updatedAt = new Date().toISOString();
   if (!state.createdAt) state.createdAt = state.updatedAt;
-  writeFileSync(statePath(), JSON.stringify(state, null, 2));
+  writeJsonFile(statePath(), state);
 }
 
 export function clearState(): void {
-  ensureStateDir();
-  const path = statePath();
-  if (existsSync(path)) {
-    writeFileSync(path, JSON.stringify(blankState(), null, 2));
-  }
+  writeJsonFile(statePath(), blankState());
 }

@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .DS_Store
 docs/_build/
+.env
+venv/
+*.tgz
+*.pptx

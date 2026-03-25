@@ -16,7 +16,7 @@ vi.mock("node:fs", () => ({
 
 // Mock node:child_process — controls openshell command results
 vi.mock("node:child_process", () => ({
-  exec: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 // Mock state loader — controls plugin state
@@ -26,7 +26,7 @@ vi.mock("../blueprint/state.js", () => ({
 
 // Import after mocks are set up
 const { existsSync } = await import("node:fs");
-const { exec } = await import("node:child_process");
+const { execFile } = await import("node:child_process");
 const { loadState } = await import("../blueprint/state.js");
 const { cliStatus } = await import("./status.js");
 
@@ -67,6 +67,26 @@ const defaultConfig: NemoClawConfig = {
   inferenceProvider: "nvidia",
 };
 
+interface StatusJsonOutput {
+  insideSandbox: boolean;
+  sandbox: {
+    insideSandbox: boolean;
+    running: boolean;
+    uptime: string | null;
+  };
+  inference: {
+    insideSandbox: boolean;
+    configured: boolean;
+    provider: string | null;
+  };
+  nemoclaw: {
+    lastAction: string | null;
+    blueprintVersion: string | null;
+    lastRunId: string | null;
+    migrationSnapshot: string | null;
+  };
+}
+
 /** Create a logger that captures all info() calls into an array. */
 function captureLogger(): { lines: string[]; logger: PluginLogger } {
   const lines: string[] = [];
@@ -81,19 +101,24 @@ function captureLogger(): { lines: string[]; logger: PluginLogger } {
   };
 }
 
+function parseJsonOutput(lines: string[]): StatusJsonOutput {
+  return JSON.parse(lines.join("")) as StatusJsonOutput;
+}
+
 /**
  * Make the exec mock resolve with the given stdout, or reject if error is set.
  * Routes by command substring so sandbox and inference calls can differ.
  */
 function mockExec(responses: Record<string, string | Error>): void {
-  vi.mocked(exec).mockImplementation(((
-    cmd: string,
+  vi.mocked(execFile).mockImplementation(((
+    file: string,
+    args: readonly string[] | null | undefined,
     _opts: unknown,
     callback?: (err: Error | null, result: { stdout: string; stderr: string }) => void,
   ) => {
-    // promisify(exec)(cmd, opts) calls exec(cmd, opts, callback)
+    const commandLine = `${file} ${(args ?? []).join(" ")}`;
     for (const [substring, response] of Object.entries(responses)) {
-      if (cmd.includes(substring)) {
+      if (commandLine.includes(substring)) {
         if (response instanceof Error) {
           callback?.(response, { stdout: "", stderr: response.message });
         } else {
@@ -103,8 +128,8 @@ function mockExec(responses: Record<string, string | Error>): void {
       }
     }
     // Default: command not found
-    callback?.(new Error(`command not found: ${cmd}`), { stdout: "", stderr: "" });
-  }) as typeof exec);
+    callback?.(new Error(`command not found: ${commandLine}`), { stdout: "", stderr: "" });
+  }) as typeof execFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +165,7 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(false);
       expect(data.sandbox.insideSandbox).toBe(false);
       expect(data.sandbox.running).toBe(false);
@@ -200,7 +225,7 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(false);
       expect(data.sandbox.running).toBe(true);
       expect(data.sandbox.uptime).toBe("2h 14m");
@@ -238,7 +263,7 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.sandbox.running).toBe(true);
       expect(data.inference.configured).toBe(false);
       expect(data.inference.insideSandbox).toBe(false);
@@ -291,7 +316,7 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: false, logger, pluginConfig: defaultConfig });
 
-      expect(exec).not.toHaveBeenCalled();
+      expect(execFile).not.toHaveBeenCalled();
     });
 
     it("JSON output has insideSandbox: true everywhere", async () => {
@@ -299,7 +324,7 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(true);
       expect(data.sandbox.insideSandbox).toBe(true);
       expect(data.sandbox.running).toBe(false);
@@ -347,14 +372,12 @@ describe("cliStatus", () => {
 
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(true);
       expect(data.nemoclaw.lastAction).toBe("migrate");
       expect(data.nemoclaw.blueprintVersion).toBe("0.1.0");
       expect(data.nemoclaw.lastRunId).toBe("run-a1b2c3d4");
-      expect(data.nemoclaw.migrationSnapshot).toBe(
-        "/root/.nemoclaw/snapshots/pre-migrate.tar.gz",
-      );
+      expect(data.nemoclaw.migrationSnapshot).toBe("/root/.nemoclaw/snapshots/pre-migrate.tar.gz");
     });
   });
 
@@ -379,8 +402,9 @@ describe("cliStatus", () => {
       expect(output).toContain("Name:    custom-sandbox");
 
       // Verify the exec call used the custom sandbox name
-      expect(exec).toHaveBeenCalledWith(
-        expect.stringContaining("custom-sandbox"),
+      expect(execFile).toHaveBeenCalledWith(
+        "openshell",
+        expect.arrayContaining(["custom-sandbox"]),
         expect.anything(),
         expect.anything(),
       );
@@ -392,12 +416,13 @@ describe("cliStatus", () => {
         "inference get": new Error("not configured"),
       });
 
-      const { lines, logger } = captureLogger();
+      const { logger } = captureLogger();
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
       // Verify exec was called with default name
-      expect(exec).toHaveBeenCalledWith(
-        expect.stringContaining("openclaw"),
+      expect(execFile).toHaveBeenCalledWith(
+        "openshell",
+        expect.arrayContaining(["openclaw"]),
         expect.anything(),
         expect.anything(),
       );
@@ -411,7 +436,7 @@ describe("cliStatus", () => {
       const { lines, logger } = captureLogger();
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(true);
     });
 
@@ -423,7 +448,7 @@ describe("cliStatus", () => {
       const { lines, logger } = captureLogger();
       await cliStatus({ json: true, logger, pluginConfig: defaultConfig });
 
-      const data = JSON.parse(lines.join(""));
+      const data = parseJsonOutput(lines);
       expect(data.insideSandbox).toBe(true);
     });
 
