@@ -31,13 +31,6 @@ const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
   "You are a helpful AI assistant. Answer concisely in the same language as the user.";
 const PORT = parseInt(process.env.PORT || "3100", 10);
-const ALLOWED_USERS = process.env.ALLOWED_LINE_USER_IDS
-  ? process.env.ALLOWED_LINE_USER_IDS.split(",").map((s) => s.trim())
-  : null;
-
-if (API_KEY) {
-  process.env.NVIDIA_API_KEY = API_KEY;
-}
 
 if (!CHANNEL_SECRET) { console.error("LINE_CHANNEL_SECRET required"); process.exit(1); }
 if (!CHANNEL_ACCESS_TOKEN) { console.error("LINE_CHANNEL_ACCESS_TOKEN required"); process.exit(1); }
@@ -165,16 +158,11 @@ async function callNvidiaApi(userId, userMessage) {
 
 // ── Handle webhook events ────────────────────────────────────────────
 async function handleEvent(event) {
+  console.log(`[webhook] event type=${event.type}, message type=${event.message?.type}`);
   if (event.type !== "message" || event.message.type !== "text") return;
 
   const userId = event.source.userId;
   const text = event.message.text;
-
-  // Access control
-  if (ALLOWED_USERS && !ALLOWED_USERS.includes(userId)) {
-    console.log(`[ignored] user ${userId} not in allowed list`);
-    return;
-  }
 
   console.log(`[${userId}] ${text}`);
 
@@ -196,16 +184,15 @@ async function handleEvent(event) {
     let sent = false;
     if (elapsed < 20000) {
       const replyResult = await replyMessage(event.replyToken, response);
+      console.log(`[${userId}] reply result: ${replyResult.status} ${JSON.stringify(replyResult.body).slice(0, 200)}`);
       if (replyResult.status === 200) {
         sent = true;
-        console.log(`[${userId}] sent via reply`);
-      } else {
-        console.warn(`[${userId}] reply failed (${replyResult.status}), falling back to push`);
       }
     }
     if (!sent) {
+      console.log(`[${userId}] falling back to push message`);
       const pushResult = await pushMessage(userId, response);
-      console.log(`[${userId}] sent via push (status=${pushResult.status})`);
+      console.log(`[${userId}] push result: ${pushResult.status} ${JSON.stringify(pushResult.body).slice(0, 200)}`);
     }
   } catch (err) {
     console.error(`[${userId}] error:`, err.message);

@@ -15,8 +15,6 @@ services:
         sync: false
       - key: NVIDIA_API_KEY
         sync: false
-      - key: ALLOWED_LINE_USER_IDS
-        sync: false
       - key: MODEL
         value: nvidia/llama-3.3-nemotron-super-49b-v1
       - key: SYSTEM_PROMPT
