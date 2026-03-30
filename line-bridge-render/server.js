@@ -269,4 +269,19 @@ server.listen(PORT, () => {
   console.log(`  Model:   ${MODEL}`);
   console.log(`  Webhook: POST /webhook`);
   console.log(`  Health:  GET  /health`);
+
+  // Keep-alive: ping ourselves every 10 minutes to prevent Render free tier sleep
+  if (process.env.RENDER_EXTERNAL_URL || process.env.RENDER) {
+    const url = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    setInterval(() => {
+      const mod = url.startsWith("https") ? https : http;
+      mod.get(`${url}/health`, (res) => {
+        res.resume();
+        console.log(`[keep-alive] ping ${res.statusCode}`);
+      }).on("error", (err) => {
+        console.warn(`[keep-alive] ping failed: ${err.message}`);
+      });
+    }, 10 * 60 * 1000);
+    console.log(`  Keep-alive: every 10 minutes`);
+  }
 });
