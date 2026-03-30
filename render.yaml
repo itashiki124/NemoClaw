@@ -18,6 +18,6 @@ services:
       - key: MODEL
         value: nvidia/llama-3.3-nemotron-super-49b-v1
       - key: SYSTEM_PROMPT
-        value: "You are a helpful AI assistant. Answer concisely in the same language as the user."
+        sync: false
       - key: NODE_ENV
         value: production
