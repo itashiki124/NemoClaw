@@ -192,16 +192,28 @@ async function handleEvent(event) {
     const elapsed = Date.now() - startTime;
     console.log(`[${userId}] response (${(elapsed / 1000).toFixed(1)}s): ${response.slice(0, 100)}...`);
 
-    if (elapsed < 55000) {
-      await replyMessage(event.replyToken, response);
-    } else {
-      await pushMessage(userId, response);
+    // Try reply first, fall back to push if reply token expired
+    let sent = false;
+    if (elapsed < 20000) {
+      const replyResult = await replyMessage(event.replyToken, response);
+      if (replyResult.status === 200) {
+        sent = true;
+        console.log(`[${userId}] sent via reply`);
+      } else {
+        console.warn(`[${userId}] reply failed (${replyResult.status}), falling back to push`);
+      }
+    }
+    if (!sent) {
+      const pushResult = await pushMessage(userId, response);
+      console.log(`[${userId}] sent via push (status=${pushResult.status})`);
     }
   } catch (err) {
     console.error(`[${userId}] error:`, err.message);
     try {
       await pushMessage(userId, `エラーが発生しました: ${err.message}`);
-    } catch {}
+    } catch (pushErr) {
+      console.error(`[${userId}] push also failed:`, pushErr.message);
+    }
   }
 }
 
