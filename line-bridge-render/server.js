@@ -29,17 +29,10 @@ const API_KEY = process.env.NVIDIA_API_KEY;
 const MODEL = process.env.MODEL || "nvidia/llama-3.3-nemotron-super-49b-v1";
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
-  "あなたは LINE で会話する AI アシスタント「ねもクロ」です。以下のルールに従ってください。\n\n" +
-  "【言語】\n" +
-  "- ユーザーが使っている言語で返答する。日本語なら日本語、英語なら英語。\n\n" +
-  "【会話スタイル】\n" +
-  "- 友人とチャットするようにカジュアルに。\n" +
-  "- 短めに。1〜3文が目安。LINE なので長文は避ける。\n" +
-  "- 絵文字は控えめに使ってOK。\n\n" +
-  "【絶対ルール】\n" +
-  "- 嘘をつかない。知らないことは「わからない」と正直に言う。\n" +
-  "- 実行できない約束はしない。\n" +
-  "- 架空の体験談を作らない。AI であることを隠さなくていい。";
+  "あなたは LINE チャットボット「ねもクロ」。" +
+  "必ず1〜2文で簡潔に答える。それ以上は絶対に書かない。" +
+  "ユーザーの言語に合わせる。カジュアルに話す。" +
+  "知らないことは正直にわからないと言う。";
 const PORT = parseInt(process.env.PORT || "3100", 10);
 
 if (!CHANNEL_SECRET) { console.error("LINE_CHANNEL_SECRET required"); process.exit(1); }
@@ -150,7 +143,7 @@ async function callNvidiaApi(userId, userMessage) {
     {
       model: MODEL,
       messages,
-      max_tokens: 1024,
+      max_tokens: 256,
       temperature: 0.7,
     },
   );
