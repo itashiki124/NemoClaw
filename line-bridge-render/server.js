@@ -21,35 +21,11 @@
 const http = require("http");
 const https = require("https");
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
-const { getCredential } = require("../bin/lib/credentials");
 
 // ── Config ───────────────────────────────────────────────────────────
-function parseJsonCredentials(filePath) {
-  try {
-    const buffer = fs.readFileSync(filePath);
-    let text;
-    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
-      text = buffer.toString("utf16le").replace(/^\uFEFF/, "");
-    } else {
-      text = buffer.toString("utf8").replace(/^\uFEFF/, "");
-    }
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
-}
-
-function getRepoCredential(key) {
-  const repoCredsPath = path.resolve(__dirname, "..", "credentials.json");
-  const creds = parseJsonCredentials(repoCredsPath);
-  return creds[key] || null;
-}
-
 const CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-const API_KEY = process.env.NVIDIA_API_KEY || getCredential("NVIDIA_API_KEY") || getRepoCredential("NVIDIA_API_KEY");
+const API_KEY = process.env.NVIDIA_API_KEY;
 const MODEL = process.env.MODEL || "nvidia/llama-3.3-nemotron-super-49b-v1";
 const SYSTEM_PROMPT =
   process.env.SYSTEM_PROMPT ||
