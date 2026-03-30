@@ -1,0 +1,20 @@
+version: 1
+network_policies:
+  line:
+    name: line
+    endpoints:
+      - host: api.line.me
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: POST, path: "/v2/bot/message/**" }
+          - allow: { method: GET, path: "/v2/bot/**" }
+      - host: api-data.line.me
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        tls: terminate
+        rules:
+          - allow: { method: GET, path: "/**" }

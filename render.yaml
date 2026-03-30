@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: nemoclaw-line-bridge
+    runtime: node
+    region: singapore
+    plan: free
+    rootDir: line-bridge-render
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: ALLOWED_LINE_USER_IDS
+        sync: false
+      - key: MODEL
+        value: nvidia/llama-3.3-nemotron-super-49b-v1
+      - key: SYSTEM_PROMPT
+        value: "You are a helpful AI assistant. Answer concisely in the same language as the user."
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,12 @@
+{
+  "name": "nemoclaw-line-bridge",
+  "version": "1.0.0",
+  "description": "NemoClaw LINE Bridge for Render — calls NVIDIA API directly",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
